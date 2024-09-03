@@ -73,73 +73,91 @@ export function fetchEventSource(input: RequestInfo, {
 
         let curRequestController: AbortController;
         function onVisibilityChange() {
-            curRequestController.abort(); // close existing request on every visibility change
-            if (!document.hidden) {
-                create(); // page is now visible again, recreate request.
-            }
+          curRequestController.abort(); // close existing request on every visibility change
+          if (!globalThis.document?.hidden) {
+            create(); // page is now visible again, recreate request.
+          }
         }
 
-        if (!openWhenHidden) {
-            document.addEventListener('visibilitychange', onVisibilityChange);
+        if (globalThis.document && !openWhenHidden) {
+          globalThis.document?.addEventListener(
+            "visibilitychange",
+            onVisibilityChange
+          );
         }
 
         let retryInterval = DefaultRetryInterval;
         let retryTimer = 0;
         function dispose() {
-            document.removeEventListener('visibilitychange', onVisibilityChange);
-            window.clearTimeout(retryTimer);
-            curRequestController.abort();
+          globalThis.document?.removeEventListener(
+            "visibilitychange",
+            onVisibilityChange
+          );
+          globalThis.clearTimeout(retryTimer);
+          curRequestController.abort();
         }
 
         // if the incoming signal aborts, dispose resources and resolve:
-        inputSignal?.addEventListener('abort', () => {
-            dispose();
-            resolve(); // don't waste time constructing/logging errors
+        inputSignal?.addEventListener("abort", () => {
+          dispose();
+          resolve(); // don't waste time constructing/logging errors
         });
 
-        const fetch = inputFetch ?? window.fetch;
+        const fetch = inputFetch ?? globalThis.fetch;
         const onopen = inputOnOpen ?? defaultOnOpen;
         async function create() {
-            curRequestController = new AbortController();
-            try {
-                const response = await fetch(input, {
-                    ...rest,
-                    headers,
-                    signal: curRequestController.signal,
-                });
+          if (curRequestController) {
+            curRequestController.abort();
+          }
+          curRequestController = new AbortController();
+          try {
+            const response = await fetch(input, {
+              ...rest,
+              headers,
+              signal: curRequestController.signal,
+            });
 
-                await onopen(response);
-                
-                await getBytes(response.body!, getLines(getMessages(id => {
+            await onopen(response);
+
+            await getBytes(
+              response.body!,
+              getLines(
+                getMessages(
+                  (id) => {
                     if (id) {
-                        // store the id and send it back on the next retry:
-                        headers[LastEventId] = id;
+                      // store the id and send it back on the next retry:
+                      headers[LastEventId] = id;
                     } else {
-                        // don't send the last-event-id header anymore:
-                        delete headers[LastEventId];
+                      // don't send the last-event-id header anymore:
+                      delete headers[LastEventId];
                     }
-                }, retry => {
+                  },
+                  (retry) => {
                     retryInterval = retry;
-                }, onmessage)));
+                  },
+                  onmessage
+                )
+              )
+            );
 
-                onclose?.();
+            onclose?.();
+            dispose();
+            resolve();
+          } catch (err) {
+            if (!curRequestController.signal.aborted) {
+              // if we haven't aborted the request ourselves:
+              try {
+                // check if we need to retry:
+                const interval: any = onerror?.(err) ?? retryInterval;
+                globalThis.clearTimeout(retryTimer);
+                retryTimer = globalThis.setTimeout(create, interval);
+              } catch (innerErr) {
+                // we should not retry anymore:
                 dispose();
-                resolve();
-            } catch (err) {
-                if (!curRequestController.signal.aborted) {
-                    // if we haven't aborted the request ourselves:
-                    try {
-                        // check if we need to retry:
-                        const interval: any = onerror?.(err) ?? retryInterval;
-                        window.clearTimeout(retryTimer);
-                        retryTimer = window.setTimeout(create, interval);
-                    } catch (innerErr) {
-                        // we should not retry anymore:
-                        dispose();
-                        reject(innerErr);
-                    }
-                }
+                reject(innerErr);
+              }
             }
+          }
         }
 
         create();
